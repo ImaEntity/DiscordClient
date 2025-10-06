@@ -1,6 +1,7 @@
 const https = require("https");
 const ws = require("ws");
 const fs = require("fs");
+const EventEmitter = require("events");
 
 const GATEWAY_OPCODES = {
     IDENTIFY: 2,
@@ -20,7 +21,13 @@ const ERRORS = {
     MFA_UNSUPPORTED  : -3,
     MFA_NO_CODE      : -4,
     MFA_BAD_CODE     : -5
-}
+};
+
+const DEFAULT_PLATFORM = {
+    os: process.platform,
+    browser: "ElectronJS",
+    device: "NodeJS Runtime"
+};
 
 function formatJSON(data) {
     if(!data) return null;
@@ -41,8 +48,9 @@ function isValidJSON(str) {
 }
 
 function makeRequest(options={}) {
-    const path    = options.path ?? "/";
-    const method  = options.method ?? "GET";
+    const host    = options.host    ?? "discord.com";
+    const path    = options.path    ?? "/";
+    const method  = options.method  ?? "GET";
     const headers = options.headers ?? {};
     const body    = formatJSON(options.body);
 
@@ -53,11 +61,13 @@ function makeRequest(options={}) {
     }
 
     const reqOpt = {
-        host: "discord.com",
+        host,
+        headers,
         port: 443,
-        path: `/api/v10${path}`,
-        method,
-        headers
+        method: method.toLowerCase(),
+        path: host == "discord.com" ?
+            `/api/v10${path}` :
+            path
     };
 
     return new Promise(function(resolve) {
@@ -82,14 +92,9 @@ function makeRequest(options={}) {
     });
 }
 
-const POST   = (options={}) => makeRequest({...options, method: "POST"  });
-const GET    = (options={}) => makeRequest({...options, method: "GET"   });
-const PATCH  = (options={}) => makeRequest({...options, method: "PATCH" });
-const PUT    = (options={}) => makeRequest({...options, method: "PUT"   });
-const DELETE = (options={}) => makeRequest({...options, method: "DELETE"});
-
 async function retrieveToken(options={}) {
-    const response = await POST({
+    const response = await makeRequest({
+        method: "POST",
         path: "/auth/login",
         body: options
     });
@@ -136,7 +141,8 @@ async function retrieveToken(options={}) {
                 code: ERRORS.MFA_NO_CODE
             };
 
-            const response = await POST({
+            const response = await makeRequest({
+                method: "POST",
                 path: `/auth/mfa/${protocol}`,
                 body: {
                     code: options.code,
@@ -153,10 +159,64 @@ async function retrieveToken(options={}) {
     }
 }
 
+class Client extends EventEmitter {
+    #socket                = null;
+    #heartbeatInterval     = null;
+    #startTime             = null;
+    #resumeURL             = null;
+    #lastHeartbeat         = null;
+    #receivedLastHeartbeat = null;
+    #token                 = null;
+    #latency               = null;
+    #sequenceID            = null;
+    #sessionID             = null;
+
+    #platform         = null;
+    #heartbeatTimeout = null;
+    #reconnectDelay   = null; 
+    #debugLogs        = null;
+
+    constructor(options={}) {
+        super();
+
+        this.#platform         = options.platform         ?? DEFAULT_PLATFORM;
+        this.#heartbeatTimeout = options.heartbeatTimeout ?? 10000;
+        this.#reconnectDelay   = options.reconnectDelay   ?? 5000;
+        this.#debugLogs        = options.debugLogs        ?? true;
+    }
+
+    #log(...args) {
+        if(!this.#debugLogs) return;
+        console.log("[ControlSocket]", ...args);
+    }
+
+    #request(method, path, body) {
+        return makeRequest({
+            headers: {Authorization: this.#token},
+            method,
+            path,
+            body
+        });
+    }
+
+    token() {return this.#token;}
+    latency() {return this.#latency;}
+    sessionID() {return this.#sessionID;}
+    resumeURL() {return this.#resumeURL;}
+    sequenceID() {return this.#sequenceID;}
+    heartbeatTimeout() {return this.#heartbeatTimeout;}
+    reconnectDelay() {return this.#reconnectDelay;}
+    debugLogs() {return this.#debugLogs;}
+    platform() {return this.#platform;}
+}
+
 module.exports = {
     retrieveToken,
     isValidJSON,
     formatJSON,
+    
     GATEWAY_OPCODES,
-    ERRORS
+    ERRORS,
+
+    Client
 };
